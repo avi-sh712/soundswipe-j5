@@ -1,25 +1,45 @@
-import { create } from 'zustand';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+
+export interface SavedAsset {
+  id: string;
+  name: string;
+  category: string;
+  url: string;
+}
 
 interface AppState {
-  likedAssets: Set<string>;
-  toggleLike: (id: string) => void;
+  /** Map of saved/liked assets keyed by id, so we can render a Saved view. */
+  savedAssets: Record<string, SavedAsset>;
+  toggleSave: (asset: SavedAsset) => void;
   currentCategory: string;
   setCategory: (category: string) => void;
 }
 
-const useAppStore = create<AppState>((set) => ({
-  likedAssets: new Set(),
-  toggleLike: (id) => set((state) => {
-    const newLiked = new Set(state.likedAssets);
-    if (newLiked.has(id)) {
-      newLiked.delete(id);
-    } else {
-      newLiked.add(id);
-    }
-    return { likedAssets: newLiked };
-  }),
-  currentCategory: 'All',
-  setCategory: (category) => set({ currentCategory: category }),
-}));
+const useAppStore = create<AppState>()(
+  persist(
+    (set) => ({
+      savedAssets: {},
+      toggleSave: (asset) =>
+        set((state) => {
+          const next = { ...state.savedAssets };
+          if (next[asset.id]) {
+            delete next[asset.id];
+          } else {
+            next[asset.id] = asset;
+          }
+          return { savedAssets: next };
+        }),
+      currentCategory: "All",
+      setCategory: (category) => set({ currentCategory: category }),
+    }),
+    {
+      name: "soundswipe-store",
+      // Only persist the saved library (a client cache; likes are also stored
+      // server-side in DynamoDB). The active category resets on reload.
+      partialize: (state) => ({ savedAssets: state.savedAssets }),
+    },
+  ),
+);
 
 export default useAppStore;

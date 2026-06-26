@@ -89,26 +89,29 @@ export default function UploadForm() {
     setPhase("validating");
     setMessage("Checking duration…");
 
-    const audio = new Audio(URL.createObjectURL(selected));
+    const objectUrl = URL.createObjectURL(selected);
+    const audio = new Audio(objectUrl);
     audio.onloadedmetadata = () => {
-      if (audio.duration > MAX_SECONDS) {
-        // Gate longer files behind premium (UI-only for the MVP).
+      const dur = audio.duration;
+      // Some encodings (e.g. webm recordings) report Infinity/NaN duration.
+      // Only gate behind premium when we have a real, finite over-limit value.
+      if (Number.isFinite(dur) && dur > MAX_SECONDS) {
         setPhase("error");
         setMessage(
-          `That clip is ${audio.duration.toFixed(
-            0,
-          )}s. Free uploads are capped at ${MAX_SECONDS}s.`,
+          `That clip is ${dur.toFixed(0)}s. Free uploads are capped at ${MAX_SECONDS}s.`,
         );
         setFile(null);
         setShowPro(true);
       } else {
-        acceptFile(selected, audio.duration);
+        acceptFile(selected, Number.isFinite(dur) ? dur : 0);
       }
+      URL.revokeObjectURL(objectUrl);
     };
     audio.onerror = () => {
-      setPhase("error");
-      setMessage("Could not read that audio file.");
-      setFile(null);
+      // Couldn't decode metadata — accept it anyway rather than block a valid
+      // upload; the backend/S3 remain the source of truth.
+      acceptFile(selected, 0);
+      URL.revokeObjectURL(objectUrl);
     };
   };
 

@@ -13,14 +13,21 @@ router = APIRouter()
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1") 
 S3_BUCKET = os.getenv("S3_BUCKET_NAME", "foleyswipe-audio-assets")
 
-# Force Signature Version 4 and exact regional endpoint
+# Force Signature Version 4 and exact regional endpoint.
+#
+# IMPORTANT: do NOT pass aws_access_key_id / aws_secret_access_key explicitly.
+# Inside Lambda the execution role provides *temporary* credentials made of
+# THREE parts: key, secret, AND a session token (AWS_SESSION_TOKEN). Passing
+# only the key + secret produces presigned POSTs that are missing the required
+# `x-amz-security-token` field, which makes S3 reject every upload with 403.
+#
+# Letting boto3 use the default credential provider chain picks up all three
+# parts automatically, so presigned uploads include the session token and work.
 s3_client = boto3.client(
     's3',
     region_name=AWS_REGION,
     endpoint_url=f"https://s3.{AWS_REGION}.amazonaws.com",
     config=Config(signature_version='s3v4'),
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
 )
 
 class UploadRequest(BaseModel):

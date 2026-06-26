@@ -50,7 +50,7 @@ export default function SoundCard({
   const initials = asset.name?.slice(0, 1)?.toUpperCase() ?? "S";
 
   return (
-    <section className="relative flex h-[100dvh] w-full snap-start items-center justify-center px-4">
+    <section className="relative flex h-full w-full items-center justify-center px-4">
       <div className="relative flex w-full max-w-md flex-col items-center">
         {/* Cover / play surface */}
         <button
