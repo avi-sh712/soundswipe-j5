@@ -38,6 +38,7 @@ export default function UploadForm() {
   // Recording state
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [inIframe, setInIframe] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -46,6 +47,7 @@ export default function UploadForm() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    setInIframe(window.self !== window.top);
     return () => {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       stopTracks();
@@ -119,6 +121,31 @@ export default function UploadForm() {
 
   const startRecording = async () => {
     resetSelection();
+
+    // Feature / environment checks with specific messaging.
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices ||
+      !navigator.mediaDevices.getUserMedia
+    ) {
+      setPhase("error");
+      // getUserMedia is undefined on insecure (http) origins and very old browsers.
+      const insecure =
+        typeof window !== "undefined" && !window.isSecureContext;
+      setMessage(
+        insecure
+          ? "Recording needs a secure (https) connection. Open the deployed/preview URL over https."
+          : "Your browser does not support in-app recording. Try Chrome, Edge, or Safari.",
+      );
+      return;
+    }
+
+    if (typeof MediaRecorder === "undefined") {
+      setPhase("error");
+      setMessage("This browser does not support MediaRecorder. Try Chrome or Edge.");
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -162,9 +189,24 @@ export default function UploadForm() {
           return next;
         });
       }, 100);
-    } catch {
+    } catch (err) {
+      console.log("[v0] getUserMedia error:", err);
+      const name = err instanceof DOMException ? err.name : "";
+      const inIframe =
+        typeof window !== "undefined" && window.self !== window.top;
+      let msg = "Could not access the microphone.";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        msg = inIframe
+          ? "Mic blocked in this embedded preview. Open the app in a new browser tab, then allow microphone access."
+          : "Microphone permission was denied. Allow mic access in your browser's site settings and try again.";
+      } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        msg = "No microphone was found. Connect a mic and try again.";
+      } else if (name === "NotReadableError") {
+        msg = "Your microphone is already in use by another app.";
+      }
       setPhase("error");
-      setMessage("Microphone access was denied.");
+      setMessage(msg);
+      stopTracks();
     }
   };
 
@@ -312,6 +354,19 @@ export default function UploadForm() {
         {/* Record mode */}
         {mode === "record" && (
           <div className="mb-5 flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-border bg-surface-2/50 px-4 py-8">
+            {inIframe && (
+              <p className="rounded-lg bg-surface px-3 py-2 text-center text-xs text-muted ring-1 ring-border">
+                Recording is blocked inside the embedded preview.{" "}
+                <button
+                  type="button"
+                  onClick={() => window.open(window.location.href, "_blank")}
+                  className="font-semibold text-accent underline"
+                >
+                  Open in a new tab
+                </button>{" "}
+                to use your mic.
+              </p>
+            )}
             <div className="font-mono text-3xl font-bold tabular-nums">
               {elapsed.toFixed(1)}
               <span className="text-base text-muted">/{MAX_SECONDS}s</span>
