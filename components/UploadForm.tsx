@@ -1,27 +1,60 @@
 "use client";
 
-import { useState } from "react";
-import { UploadCloud } from "lucide-react";
+import { useRef, useState } from "react";
+import Link from "next/link";
+import {
+  UploadCloud,
+  ArrowLeft,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Music,
+} from "lucide-react";
+import { UPLOAD_CATEGORIES } from "../lib/categories";
+import { requestPresignedUrl, uploadToS3, confirmUpload } from "../lib/api";
+
+const MAX_SECONDS = 10;
+
+type Phase = "idle" | "validating" | "uploading" | "success" | "error";
 
 export default function UploadForm() {
   const [file, setFile] = useState<File | null>(null);
+  const [fileDuration, setFileDuration] = useState(0);
   const [title, setTitle] = useState("");
-  const [category, setCategory] = useState("UI");
-  const [status, setStatus] = useState("");
+  const [category, setCategory] = useState(UPLOAD_CATEGORIES[0].value);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [message, setMessage] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
+  const validateAndSetFile = (selected: File | undefined) => {
+    if (!selected) return;
+    if (!selected.type.startsWith("audio/")) {
+      setPhase("error");
+      setMessage("Please choose an audio file.");
+      return;
+    }
+    setPhase("validating");
+    setMessage("Checking duration…");
 
-    const audio = new Audio(URL.createObjectURL(selectedFile));
+    const audio = new Audio(URL.createObjectURL(selected));
     audio.onloadedmetadata = () => {
-      if (audio.duration > 10) {
-        setStatus("Error: Audio must be 10 seconds or less.");
+      if (audio.duration > MAX_SECONDS) {
+        setPhase("error");
+        setMessage(`Audio must be ${MAX_SECONDS} seconds or less.`);
         setFile(null);
       } else {
-        setStatus("");
-        setFile(selectedFile);
+        setFileDuration(audio.duration);
+        setFile(selected);
+        setPhase("idle");
+        setMessage("");
+        if (!title) setTitle(selected.name.replace(/\.[^.]+$/, ""));
       }
+    };
+    audio.onerror = () => {
+      setPhase("error");
+      setMessage("Could not read that audio file.");
+      setFile(null);
     };
   };
 
@@ -29,106 +62,170 @@ export default function UploadForm() {
     e.preventDefault();
     if (!file) return;
 
-    setStatus("Requesting secure URL...");
     try {
-      const urlRes = await fetch("/api/upload/presigned-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          file_name: file.name,
-          content_type: file.type,
-          category: category
-        })
-      });
-      
-      const { presigned_url, asset_id, object_key } = await urlRes.json();
-
-      setStatus("Uploading to S3...");
-      const formData = new FormData();
-      Object.entries(presigned_url.fields).forEach(([key, value]) => {
-        formData.append(key, value as string);
-      });
-      formData.append("file", file);
-
-      await fetch(presigned_url.url, {
-        method: "POST",
-        body: formData,
+      setPhase("uploading");
+      setMessage("Requesting secure upload URL…");
+      const { presigned_url, asset_id, object_key } = await requestPresignedUrl({
+        file_name: file.name,
+        content_type: file.type,
+        category,
       });
 
-      setStatus("Saving to database...");
-      await fetch("/api/upload/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          asset_id: asset_id,
-          file_name: title,
-          category: category,
-          object_key: object_key
-        })
+      setMessage("Uploading to S3…");
+      await uploadToS3(presigned_url, file);
+
+      setMessage("Saving to the library…");
+      await confirmUpload({
+        asset_id,
+        file_name: title || file.name,
+        category,
+        object_key,
       });
 
-      setStatus("Upload successful!");
+      setPhase("success");
+      setMessage("Upload complete! Your sound is live.");
       setTitle("");
       setFile(null);
+      setFileDuration(0);
+      if (inputRef.current) inputRef.current.value = "";
     } catch (err) {
-      setStatus("Upload failed.");
+      setPhase("error");
+      setMessage(err instanceof Error ? err.message : "Upload failed.");
     }
   };
 
+  const busy = phase === "uploading" || phase === "validating";
+
   return (
-    <form onSubmit={handleUpload} className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-2xl">
-      <h2 className="text-2xl font-bold mb-6 text-white flex items-center gap-2">
-        <UploadCloud className="text-blue-500" /> 
-        Upload Asset
-      </h2>
-
-      <div className="space-y-4 mb-6">
-        <div>
-          <label className="block text-sm font-medium text-zinc-400 mb-1">Asset Title</label>
-          <input 
-            type="text"
-            required
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-white focus:outline-none focus:border-blue-500"
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-zinc-400 mb-1">Category</label>
-          <select 
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-white focus:outline-none focus:border-blue-500"
-          >
-            <option value="UI">UI & Interactions</option>
-            <option value="Combat">Combat</option>
-            <option value="Impact">Impacts & Hits</option>
-            <option value="Ambience">Ambience</option>
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium text-zinc-400 mb-1">Audio File (Max 10s)</label>
-          <input 
-            type="file"
-            accept="audio/*"
-            required
-            onChange={handleFileChange}
-            className="w-full text-sm text-zinc-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-zinc-800 file:text-white hover:file:bg-zinc-700"
-          />
-        </div>
-      </div>
-
-      <button 
-        type="submit"
-        disabled={!file}
-        className="w-full bg-white text-black font-bold py-3 rounded-xl hover:bg-zinc-200 transition disabled:opacity-50"
+    <div className="w-full max-w-md">
+      <Link
+        href="/"
+        className="mb-6 inline-flex items-center gap-2 text-sm font-medium text-muted transition hover:text-foreground"
       >
-        Upload to Feed
-      </button>
+        <ArrowLeft size={16} />
+        Back to feed
+      </Link>
 
-      {status && <p className="mt-4 text-center text-sm font-mono text-zinc-400">{status}</p>}
-    </form>
+      <form
+        onSubmit={handleUpload}
+        className="rounded-3xl bg-surface p-6 shadow-2xl ring-1 ring-border"
+      >
+        <h1 className="mb-1 flex items-center gap-2 text-2xl font-bold">
+          <UploadCloud className="text-accent" />
+          Upload a sound
+        </h1>
+        <p className="mb-6 text-sm text-muted">
+          Short clips only — {MAX_SECONDS} seconds or less.
+        </p>
+
+        {/* Drop zone */}
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            validateAndSetFile(e.dataTransfer.files?.[0]);
+          }}
+          className={`mb-5 flex w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed px-4 py-8 text-center transition ${
+            dragging
+              ? "border-accent bg-accent/5"
+              : file
+                ? "border-accent/50 bg-surface-2"
+                : "border-border bg-surface-2/50 hover:border-accent/50"
+          }`}
+        >
+          {file ? (
+            <>
+              <Music className="text-accent" size={28} />
+              <span className="max-w-full truncate text-sm font-semibold">
+                {file.name}
+              </span>
+              <span className="font-mono text-xs text-muted">
+                {fileDuration.toFixed(1)}s
+              </span>
+            </>
+          ) : (
+            <>
+              <UploadCloud className="text-muted" size={28} />
+              <span className="text-sm font-medium">
+                Drag &amp; drop or click to browse
+              </span>
+              <span className="text-xs text-muted">MP3, WAV, OGG</span>
+            </>
+          )}
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="audio/*"
+          className="hidden"
+          onChange={(e) => validateAndSetFile(e.target.files?.[0])}
+        />
+
+        <div className="mb-5 space-y-4">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-muted">
+              Title
+            </label>
+            <input
+              type="text"
+              required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Soft UI tap"
+              className="w-full rounded-xl border border-border bg-surface-2 p-3 text-foreground outline-none transition placeholder:text-muted/60 focus:border-accent"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-muted">
+              Category
+            </label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full rounded-xl border border-border bg-surface-2 p-3 text-foreground outline-none transition focus:border-accent"
+            >
+              {UPLOAD_CATEGORIES.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          disabled={!file || busy}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 font-bold text-accent-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {busy && <Loader2 className="animate-spin" size={18} />}
+          {phase === "uploading" ? "Uploading…" : "Publish to feed"}
+        </button>
+
+        {message && (
+          <div
+            className={`mt-4 flex items-center justify-center gap-2 text-center text-sm ${
+              phase === "error"
+                ? "text-like"
+                : phase === "success"
+                  ? "text-accent"
+                  : "text-muted"
+            }`}
+          >
+            {phase === "error" && <XCircle size={16} />}
+            {phase === "success" && <CheckCircle2 size={16} />}
+            <span>{message}</span>
+          </div>
+        )}
+      </form>
+    </div>
   );
 }

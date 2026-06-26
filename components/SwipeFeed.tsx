@@ -1,230 +1,235 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { motion, PanInfo } from "framer-motion";
-import { Howl } from "howler";
-import { Heart, Download, Share2, Play, Pause, Sparkles, Upload, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { Loader2, Plus, AudioLines, AlertCircle } from "lucide-react";
 import useAppStore from "../store/useAppStore";
-import DesktopControls from "./DesktopControls";
+import { CATEGORIES } from "../lib/categories";
+import {
+  getFeed,
+  getRecommendations,
+  likeAsset,
+  type SoundAsset,
+} from "../lib/api";
+import SoundCard from "./SoundCard";
 import ProModal from "./ProModal";
 
 export default function SwipeFeed() {
-  const [feed, setFeed] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [feed, setFeed] = useState<SoundAsset[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [playing, setPlaying] = useState(false);
   const [showProModal, setShowProModal] = useState(false);
-  const soundRef = useRef<Howl | null>(null);
 
-  const { likedAssets, toggleLike, currentCategory } = useAppStore();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
 
+  const { likedAssets, toggleLike, currentCategory, setCategory } = useAppStore();
+  const likedCount = likedAssets.size;
+
+  // Fetch the feed whenever category or like-set changes.
   useEffect(() => {
-    const fetchFeed = async () => {
-      setIsLoading(true);
+    let cancelled = false;
+    const load = async () => {
+      setStatus("loading");
       try {
-        let res;
         const likedArray = Array.from(likedAssets);
-        
-        if (likedArray.length > 0) {
-          res = await fetch("/api/feed/recommendations", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ liked_asset_ids: likedArray })
-          });
-        } else {
-          res = await fetch(`/api/feed/${currentCategory}`);
-        }
-        
-        const data = await res.json();
-        setFeed(data.assets || []);
-        setCurrentIndex(0);
-      } catch (err) {
-        setFeed([]);
-      } finally {
-        setIsLoading(false);
+        const assets =
+          currentCategory === "All" && likedArray.length > 0
+            ? await getRecommendations(likedArray)
+            : await getFeed(currentCategory);
+        if (cancelled) return;
+        setFeed(assets);
+        setActiveIndex(0);
+        setPlaying(false);
+        setStatus("ready");
+        containerRef.current?.scrollTo({ top: 0 });
+      } catch {
+        if (!cancelled) setStatus("error");
       }
     };
-    fetchFeed();
-  }, [currentCategory, likedAssets.size]);
-
-  const currentAsset = feed[currentIndex];
-  const isLiked = currentAsset ? likedAssets.has(currentAsset.id) : false;
-
-  useEffect(() => {
-    if (soundRef.current) {
-      soundRef.current.unload();
-    }
-
-    if (currentAsset) {
-      soundRef.current = new Howl({
-        src: [currentAsset.url],
-        loop: true,
-        html5: true,
-        onplay: () => setIsPlaying(true),
-        onpause: () => setIsPlaying(false),
-        onend: () => setIsPlaying(false)
-      });
-
-      if (isPlaying) {
-        soundRef.current.play();
-      }
-    }
-
+    load();
     return () => {
-      if (soundRef.current) {
-        soundRef.current.unload();
-      }
+      cancelled = true;
     };
-  }, [currentIndex, currentAsset]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCategory, likedCount]);
 
+  // Track the active card via IntersectionObserver (smooth, lag-free scrolling).
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "ArrowDown") handleNext();
-      if (e.key === "ArrowUp") handlePrev();
-      if (e.key === " ") {
+    const root = containerRef.current;
+    if (!root || feed.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const idx = Number(
+              (entry.target as HTMLElement).dataset.index ?? "0",
+            );
+            setActiveIndex(idx);
+            setPlaying(true);
+          }
+        });
+      },
+      { root, threshold: 0.6 },
+    );
+
+    cardRefs.current.forEach((el) => el && observer.observe(el));
+    return () => observer.disconnect();
+  }, [feed]);
+
+  const scrollToIndex = useCallback((idx: number) => {
+    const el = cardRefs.current[idx];
+    el?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  // Keyboard navigation.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowDown") {
         e.preventDefault();
-        handleTogglePlay();
+        scrollToIndex(Math.min(activeIndex + 1, feed.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        scrollToIndex(Math.max(activeIndex - 1, 0));
+      } else if (e.key === " ") {
+        e.preventDefault();
+        setPlaying((p) => !p);
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentIndex, isPlaying, feed.length]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeIndex, feed.length, scrollToIndex]);
 
-  const handleTogglePlay = () => {
-    if (!soundRef.current) return;
-    if (isPlaying) {
-      soundRef.current.pause();
-    } else {
-      soundRef.current.play();
-    }
-  };
+  const handleLike = useCallback(
+    async (asset: SoundAsset) => {
+      const wasLiked = likedAssets.has(asset.id);
+      toggleLike(asset.id);
+      if (!wasLiked) {
+        try {
+          await likeAsset(asset.id, {
+            name: asset.name,
+            category: asset.category,
+          });
+        } catch {
+          /* server sync best-effort; local state already updated */
+        }
+      }
+    },
+    [likedAssets, toggleLike],
+  );
 
-  const handleNext = () => {
-    if (currentIndex < feed.length - 1) {
-      setCurrentIndex((prev) => prev + 1);
-      setIsPlaying(true);
-    }
-  };
-
-  const handlePrev = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex((prev) => prev - 1);
-      setIsPlaying(true);
-    }
-  };
-
-  const handleDragEnd = (e: any, info: PanInfo) => {
-    if (info.offset.y < -50) {
-      handleNext();
-    } else if (info.offset.y > 50) {
-      handlePrev();
-    }
-  };
-
-  const handleLike = async () => {
-    if (!currentAsset) return;
-    toggleLike(currentAsset.id);
-
-    try {
-      await fetch(`/api/feed/like/${currentAsset.id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: "demo_user_123",
-          asset_data: { name: currentAsset.name, category: currentAsset.category }
-        })
-      });
-    } catch (err) {}
-  };
-
-  if (isLoading) {
-    return (
-      <div className="flex h-full w-full max-w-md items-center justify-center bg-zinc-900 border-x border-zinc-800">
-        <Loader2 className="animate-spin text-blue-500" size={48} />
-      </div>
-    );
-  }
-
-  if (feed.length === 0) {
-    return (
-      <div className="flex h-full w-full max-w-md flex-col items-center justify-center bg-zinc-900 border-x border-zinc-800 p-6 text-center">
-        <h2 className="text-xl font-bold text-white mb-4">No sounds found!</h2>
-        <p className="text-zinc-400 mb-6">Upload some audio to the {currentCategory} category to get started.</p>
-        <Link href="/upload" className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-xl transition">
-          Go to Upload
-        </Link>
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative h-full w-full max-w-md bg-zinc-900 shadow-2xl border-x border-zinc-800 flex flex-col items-center justify-center overflow-hidden">
-      <div className="absolute top-0 left-0 right-0 p-6 z-10 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
-        <h1 className="font-bold text-xl tracking-tight text-white flex items-center gap-2">
-          <Sparkles size={20} className="text-blue-500" />
-          FoleySwipe
-        </h1>
-        <div className="flex gap-3 items-center">
-          <span className="bg-zinc-800 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider text-zinc-300">
-            {currentAsset.category}
-          </span>
-          <Link href="/upload" className="bg-white/10 p-2 rounded-full hover:bg-white/20 transition cursor-pointer z-50">
-            <Upload size={18} className="text-white" />
+  const header = useMemo(
+    () => (
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col gap-3 bg-gradient-to-b from-background via-background/70 to-transparent px-4 pb-8 pt-5">
+        <div className="pointer-events-auto flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AudioLines className="text-accent" size={22} />
+            <span className="text-lg font-bold tracking-tight">SoundSwipe</span>
+          </div>
+          <Link
+            href="/upload"
+            className="flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-2 text-sm font-semibold text-accent-foreground transition hover:opacity-90"
+          >
+            <Plus size={16} />
+            Upload
           </Link>
         </div>
-      </div>
 
-      <motion.div
-        drag="y"
-        dragConstraints={{ top: 0, bottom: 0 }}
-        onDragEnd={handleDragEnd}
-        className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center cursor-grab active:cursor-grabbing"
-      >
-        <div
-          className={`mb-8 h-48 w-48 rounded-full border-4 flex items-center justify-center transition-all duration-300 ${
-            isPlaying ? "border-green-500 scale-105 shadow-[0_0_30px_rgba(34,197,94,0.4)]" : "border-zinc-700"
-          }`}
-        >
+        {/* Category chips */}
+        <div className="no-scrollbar pointer-events-auto -mx-4 flex gap-2 overflow-x-auto px-4">
+          {CATEGORIES.map((cat) => {
+            const isActive = cat.value === currentCategory;
+            return (
+              <button
+                key={cat.value}
+                onClick={() => setCategory(cat.value)}
+                className={`whitespace-nowrap rounded-full px-3.5 py-1.5 text-sm font-medium transition ${
+                  isActive
+                    ? "bg-foreground text-background"
+                    : "bg-surface-2/80 text-muted hover:text-foreground"
+                }`}
+              >
+                {cat.label}
+              </button>
+            );
+          })}
+        </div>
+      </header>
+    ),
+    [currentCategory, setCategory],
+  );
+
+  return (
+    <div className="relative mx-auto h-[100dvh] w-full max-w-md overflow-hidden bg-background ring-1 ring-border md:rounded-3xl md:my-4 md:h-[calc(100dvh-2rem)]">
+      {header}
+
+      {status === "loading" && (
+        <div className="flex h-full items-center justify-center">
+          <Loader2 className="animate-spin text-accent" size={40} />
+        </div>
+      )}
+
+      {status === "error" && (
+        <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center">
+          <AlertCircle className="text-like" size={40} />
+          <h2 className="text-lg font-bold">Couldn&apos;t reach the library</h2>
+          <p className="text-sm text-muted">
+            We couldn&apos;t connect to the audio backend. Check that
+            NEXT_PUBLIC_API_BASE_URL points to your AWS endpoint.
+          </p>
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleTogglePlay();
-            }}
-            className="rounded-full bg-zinc-800 p-6 hover:bg-zinc-700 transition"
+            onClick={() => setCategory(currentCategory)}
+            className="rounded-xl bg-foreground px-5 py-2.5 text-sm font-semibold text-background"
           >
-            {isPlaying ? <Pause size={48} /> : <Play size={48} className="ml-2" />}
+            Retry
           </button>
         </div>
+      )}
 
-        <h2 className="text-3xl font-bold tracking-tight mb-2 select-none pointer-events-none">{currentAsset.name}</h2>
-        <p className="text-zinc-500 font-mono text-sm select-none pointer-events-none">ID: {currentAsset.id}</p>
-      </motion.div>
+      {status === "ready" && feed.length === 0 && (
+        <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center">
+          <AudioLines className="text-muted" size={40} />
+          <h2 className="text-lg font-bold">No sounds here yet</h2>
+          <p className="text-sm text-muted">
+            Be the first to add a clip to this category.
+          </p>
+          <Link
+            href="/upload"
+            className="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-accent-foreground"
+          >
+            Upload a sound
+          </Link>
+        </div>
+      )}
 
-      <div className="absolute bottom-32 right-4 flex flex-col items-center gap-6 z-20">
-        <button onClick={handleLike} className="flex flex-col items-center gap-1 group">
-          <div className={`rounded-full p-3 transition ${isLiked ? 'bg-red-500/20 text-red-500' : 'bg-zinc-800/80 text-white group-hover:text-red-400'}`}>
-            <Heart size={28} fill={isLiked ? "currentColor" : "none"} />
-          </div>
-          <span className="text-xs font-semibold text-white drop-shadow-md">Save</span>
-        </button>
-        
-        <button onClick={() => setShowProModal(true)} className="flex flex-col items-center gap-1 group">
-          <div className="rounded-full bg-zinc-800/80 p-3 text-white group-hover:text-blue-400 transition">
-            <Download size={28} />
-          </div>
-          <span className="text-xs font-semibold text-white drop-shadow-md">Export</span>
-        </button>
-
-        <button className="flex flex-col items-center gap-1 group">
-          <div className="rounded-full bg-zinc-800/80 p-3 text-white group-hover:text-green-400 transition">
-            <Share2 size={28} />
-          </div>
-          <span className="text-xs font-semibold text-white drop-shadow-md">Share</span>
-        </button>
-      </div>
-
-      <DesktopControls onNext={handleNext} onPrev={handlePrev} />
+      {status === "ready" && feed.length > 0 && (
+        <div
+          ref={containerRef}
+          className="no-scrollbar h-full snap-y snap-mandatory overflow-y-scroll scroll-smooth"
+        >
+          {feed.map((asset, idx) => (
+            <div
+              key={asset.id}
+              data-index={idx}
+              ref={(el) => {
+                cardRefs.current[idx] = el;
+              }}
+            >
+              <SoundCard
+                asset={asset}
+                active={idx === activeIndex}
+                playing={idx === activeIndex && playing}
+                liked={likedAssets.has(asset.id)}
+                onTogglePlay={() => setPlaying((p) => !p)}
+                onLike={() => handleLike(asset)}
+                onExport={() => setShowProModal(true)}
+              />
+            </div>
+          ))}
+        </div>
+      )}
 
       {showProModal && <ProModal onClose={() => setShowProModal(false)} />}
     </div>
