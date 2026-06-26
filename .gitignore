@@ -1,0 +1,18 @@
+
+# Security
+.env
+
+# Next.js
+.next
+node_modules
+
+# Python
+__pycache__/
+venv/
+*.pyc
+
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
