@@ -5,6 +5,7 @@ interface ProModalProps {
 }
 
 const PERKS = [
+  "Upload clips longer than 30 seconds",
   "Uncompressed WAV exports",
   "Commercial use license",
   "Unlimited saved collections",
@@ -33,9 +34,10 @@ export default function ProModal({ onClose }: ProModalProps) {
           Pro
         </span>
 
-        <h3 className="mb-1 text-2xl font-bold">Unlock full exports</h3>
+        <h3 className="mb-1 text-2xl font-bold">Unlock longer uploads</h3>
         <p className="mb-6 text-sm text-muted">
-          Download studio-quality audio and use it in commercial projects.
+          Free clips are capped at 30 seconds. Go Pro for full-length,
+          studio-quality audio.
         </p>
 
         <div className="mb-6 rounded-2xl bg-surface-2 p-5 ring-1 ring-border">
